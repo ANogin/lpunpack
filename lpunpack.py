@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
-from typing import IO, Dict, List, TypeVar, cast, BinaryIO
+from typing import IO, Dict, List, Tuple, TypeVar, cast, BinaryIO
 
 SPARSE_HEADER_MAGIC = 0xED26FF3A
 SPARSE_HEADER_SIZE = 28
@@ -61,18 +61,19 @@ $groups
 
 
 def build_attribute_string(attributes: int) -> str:
-    match attributes:
-        case attributes if (attributes & LP_PARTITION_ATTR_READONLY):
-            result = "readonly"
-        case attributes if (attributes & LP_PARTITION_ATTR_SLOT_SUFFIXED):
-            result = "slot-suffixed"
-        case attributes if (attributes & LP_PARTITION_ATTR_UPDATED):
-            result = "updated"
-        case attributes if (attributes & LP_PARTITION_ATTR_DISABLED):
-            result = "disabled"
-        case _:
-            result = "none"
-    return result
+    result = []
+    if (attributes & LP_PARTITION_ATTR_READONLY):
+        result.append("readonly")
+    if (attributes & LP_PARTITION_ATTR_SLOT_SUFFIXED):
+        result.append("slot-suffixed")
+    if (attributes & LP_PARTITION_ATTR_UPDATED):
+        result.append("updated")
+    if (attributes & LP_PARTITION_ATTR_DISABLED):
+        result.append("disabled")
+    if result:
+        return ", ".join(result)
+    else:
+        return "none"
 
 
 def build_block_device_flag_string(flags: int) -> str:
@@ -138,9 +139,21 @@ class ShowJsonInfo(json.JSONEncoder):
         return super().encode(result)
 
 
-class SparseHeader(object):
+class LpMetadataBase:
+    _fmt = None
+
+    @classmethod
+    def size(cls) -> int:
+        return struct.calcsize(cls._fmt)
+
+    @classmethod
+    def unpack(cls, buffer) -> Tuple:
+        return struct.unpack(cls._fmt, buffer[:cls.size()])
+
+
+class SparseHeader(LpMetadataBase):
+    _fmt = '<I4H4I'
     def __init__(self, buffer):
-        fmt = '<I4H4I'
         (
             self.magic,             # 0xed26ff3a
             self.major_version,     # (0x1) - reject images with higher major versions
@@ -151,10 +164,10 @@ class SparseHeader(object):
             self.total_blks,        # total blocks in the non-sparse output image
             self.total_chunks,      # total chunks in the sparse input image
             self.image_checksum     # CRC32 checksum of the original data, counting "don't care"
-        ) = struct.unpack(fmt, buffer[0:struct.calcsize(fmt)])
+        ) = self.unpack(buffer)
 
 
-class SparseChunkHeader(object):
+class SparseChunkHeader(LpMetadataBase):
     """
         Following a Raw or Fill or CRC32 chunk is data.
         For a Raw chunk, it's the data in chunk_sz * blk_sz.
@@ -165,24 +178,15 @@ class SparseChunkHeader(object):
     TYPE_FILL=0xCAC2
     TYPE_DONT_CARE=0xCAC3
     TYPE_CRC32=0xCAC4
+    _fmt = '<2H2I'
 
     def __init__(self, buffer):
-        fmt = '<2H2I'
         (
             self.chunk_type,        # 0xCAC1 -> raw; 0xCAC2 -> fill; 0xCAC3 -> don't care */
             self.reserved,
             self.chunk_sz,          # in blocks in output image * /
             self.total_sz,          # in bytes of chunk input file including chunk header and data * /
-        ) = struct.unpack(fmt, buffer[0:struct.calcsize(fmt)])
-
-
-class LpMetadataBase:
-    _fmt = None
-
-    @classmethod
-    @property
-    def size(cls) -> int:
-        return struct.calcsize(cls._fmt)
+        ) = self.unpack(buffer)
 
 
 class LpMetadataGeometry(LpMetadataBase):
@@ -210,9 +214,7 @@ class LpMetadataGeometry(LpMetadataBase):
             self.metadata_max_size,
             self.metadata_slot_count,
             self.logical_block_size
-
-        ) = struct.unpack(self._fmt, buffer[0:self.size])
-
+        ) = self.unpack(buffer)
 
 class LpMetadataTableDescriptor(LpMetadataBase):
     """
@@ -230,9 +232,7 @@ class LpMetadataTableDescriptor(LpMetadataBase):
             self.offset,
             self.num_entries,
             self.entry_size
-
-        ) = struct.unpack(self._fmt, buffer[:self.size])
-
+        ) = self.unpack(buffer)
 
 class LpMetadataPartition(LpMetadataBase):
     """
@@ -262,7 +262,7 @@ class LpMetadataPartition(LpMetadataBase):
             self.num_extents,
             self.group_index
 
-        ) = struct.unpack(self._fmt, buffer[0:self.size])
+        ) = self.unpack(buffer)
 
         self.name = self.name.decode("utf-8").strip('\x00')
 
@@ -291,8 +291,7 @@ class LpMetadataExtent(LpMetadataBase):
             self.target_type,
             self.target_data,
             self.target_source
-
-        ) = struct.unpack(self._fmt, buffer[0:struct.calcsize(self._fmt)])
+        ) = self.unpack(buffer)
 
 
 class LpMetadataHeader(LpMetadataBase):
@@ -354,7 +353,7 @@ class LpMetadataHeader(LpMetadataBase):
             self.tables_size,
             self.tables_checksum
 
-        ) = struct.unpack(self._fmt, buffer[0:self.size])
+        ) = self.unpack(buffer)
         self.flags = 0
 
 
@@ -373,7 +372,7 @@ class LpMetadataPartitionGroup(LpMetadataBase):
             self.name,
             self.flags,
             self.maximum_size
-        ) = struct.unpack(self._fmt, buffer[0:self.size])
+        ) = self.unpack(buffer)
 
         self.name = self.name.decode("utf-8").strip('\x00')
 
@@ -418,7 +417,7 @@ class LpMetadataBlockDevice(LpMetadataBase):
             self.block_device_size,
             self.partition_name,
             self.flags
-        ) = struct.unpack(self._fmt, buffer[0:self.size])
+        ) = self.unpack(buffer)
 
         self.partition_name = self.partition_name.decode("utf-8").strip('\x00')
 
@@ -604,7 +603,7 @@ class LpUnpackError(Exception):
 class UnpackJob:
     name: str
     geometry: LpMetadataGeometry
-    parts: list[tuple[int, int]] = field(default_factory=list)
+    parts: List[Tuple[int, int]] = field(default_factory=list)
     total_size: int = field(default=0)
 
 
@@ -734,11 +733,11 @@ class LpUnpack(object):
         offsets = metadata.get_offsets()
         for index, offset in enumerate(offsets):
             self._fd.seek(offset, io.SEEK_SET)
-            header = LpMetadataHeader(self._fd.read(cast(int, LpMetadataHeader.size)))
-            header.partitions = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size)))
-            header.extents = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size)))
-            header.groups = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size)))
-            header.block_devices = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size)))
+            header = LpMetadataHeader(self._fd.read(cast(int, LpMetadataHeader.size())))
+            header.partitions = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size())))
+            header.extents = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size())))
+            header.groups = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size())))
+            header.block_devices = LpMetadataTableDescriptor(self._fd.read(cast(int, LpMetadataTableDescriptor.size())))
 
             if header.magic != LP_METADATA_HEADER_MAGIC:
                 check_index = index + 1
@@ -845,11 +844,11 @@ class LpUnpack(object):
                     raise LpUnpackError(f'Invalid metadata slot number: {self._slot_num}')
 
             if self._show_info:
-                match self._show_info_format:
-                    case FormatType.TEXT:
-                        print(metadata)
-                    case FormatType.JSON:
-                        print(f"{metadata.to_json()}\n")
+                if self._show_info_format == FormatType.TEXT:
+                    print(metadata)
+                else:
+                    assert self._show_info_format == FormatType.JSON
+                    print(f"{metadata.to_json()}\n")
 
             if not self._show_info and self._out_dir is None:
                 raise LpUnpackError(message=f'Not specified directory for extraction')
