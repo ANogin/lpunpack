@@ -1,4 +1,7 @@
+#!/usr/bin/env python3
+
 import argparse
+import binascii
 import copy
 import enum
 import io
@@ -158,6 +161,10 @@ class SparseChunkHeader(object):
         For a Fill chunk, it's 4 bytes of the fill data.
         For a CRC32 chunk, it's 4 bytes of CRC32
      """
+    TYPE_RAW=0xCAC1
+    TYPE_FILL=0xCAC2
+    TYPE_DONT_CARE=0xCAC3
+    TYPE_CRC32=0xCAC4
 
     def __init__(self, buffer):
         fmt = '<2H2I'
@@ -626,38 +633,38 @@ class SparseImage:
         unsparse_file_dir = Path(self._fd.name).parent
         unsparse_file = Path(unsparse_file_dir / "{}.unsparse.img".format(Path(self._fd.name).stem))
         with open(str(unsparse_file), 'wb') as out:
-            sector_base = 82528
-            output_len = 0
+            output_blocks = 0
+            crc32 = 0
             while chunks > 0:
                 chunk_header = SparseChunkHeader(self._fd.read(SPARSE_CHUNK_HEADER_SIZE))
-                sector_size = (chunk_header.chunk_sz * self.header.blk_sz) >> 9
+                data_size = chunk_header.chunk_sz * self.header.blk_sz
                 chunk_data_size = chunk_header.total_sz - self.header.chunk_hdr_sz
-                if chunk_header.chunk_type == 0xCAC1:
-                    data = self._read_data(chunk_data_size)
-                    len_data = len(data)
-                    if len_data == (sector_size << 9):
-                        out.write(data)
-                        output_len += len_data
-                        sector_base += sector_size
+                if chunk_header.chunk_type == chunk_header.TYPE_RAW:
+                    if chunk_data_size != data_size:
+                        raise LpUnpackError(f"Unexpected mismatch in raw chunk: input data size: {chunk_data_size}, output data size: {data_size}")
+                    data = self._read_data(data_size)
+                    if len(data) != data_size:
+                        raise LpUnpackError(f"Short read: {data_size} requested, {len(data)} read")
+                elif chunk_header.chunk_type == chunk_header.TYPE_DONT_CARE:
+                    if chunk_data_size != 0:
+                        raise LpUnpackError(f"Unexpected mismatch in don't care chunk: input data size: {chunk_data_size}, expected: 0")
+                    data = b"\00" * data_size
+                elif chunk_header.chunk_type == chunk_header.TYPE_FILL:
+                    if chunk_data_size != 4:
+                        raise LpUnpackError(f"Unexpected mismatch in don't care chunk: input data size: {chunk_data_size}, expected: 4")
+                    data = self._read_data(4) * (data_size//4) 
                 else:
-                    if chunk_header.chunk_type == 0xCAC2:
-                        data = self._read_data(chunk_data_size)
-                        len_data = sector_size << 9
-                        out.write(struct.pack("B", 0) * len_data)
-                        output_len += len(data)
-                        sector_base += sector_size
-                    else:
-                        if chunk_header.chunk_type == 0xCAC3:
-                            data = self._read_data(chunk_data_size)
-                            len_data = sector_size << 9
-                            out.write(struct.pack("B", 0) * len_data)
-                            output_len += len(data)
-                            sector_base += sector_size
-                        else:
-                            len_data = sector_size << 9
-                            out.write(struct.pack("B", 0) * len_data)
-                            sector_base += sector_size
+                    # Not seeing CRC32 chunk types in practice?
+                    raise LpUnpackError(f"Unexpected chunk type: 0x{chunk_header.chunk_type:x}")
+                out.write(data)
+                crc32 = binascii.crc32(data, crc32)
                 chunks -= 1
+                output_blocks += chunk_header.chunk_sz
+        if output_blocks != self.header.total_blks:
+            raise LpUnpackError(f"Mismatch: expected {self.header.total_blks}, actual: {output_blocks} blocks (block is {self.header.blk_sz} bytes)")
+        # Only seeing checksum of 0 in images in practice?
+        if self.header.image_checksum and crc32 != self.header.image_checksum:
+            raise LpUnpackError(f"Mismatch: expected 0x{self.header.image_checksum:x} CRC32, actual: 0x{crc32:x}")
         return unsparse_file
 
 
