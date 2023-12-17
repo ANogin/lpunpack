@@ -688,14 +688,14 @@ class LpUnpack(object):
 
     def _extract_partition(self, unpack_job: UnpackJob):
         self._check_out_dir_exists()
-        print(f'Extracting partition [{unpack_job.name}] ....', end='', flush=True)
+        print(f'Extracting partition [{unpack_job.name}] ....', end='', file=sys.stderr, flush=True)
         out_file = self._out_dir / f'{unpack_job.name}.img'
         with open(str(out_file), 'wb') as out:
             for part in unpack_job.parts:
                 offset, size = part
                 self._write_extent_to_file(out, offset, size, unpack_job.geometry.logical_block_size)
 
-        print(' [ok]')
+        print(' [ok]', file=sys.stderr)
 
     def _extract(self, partition, metadata):
         unpack_job = UnpackJob(name=partition.name, geometry=metadata.geometry)
@@ -744,7 +744,7 @@ class LpUnpack(object):
                 if check_index > len(offsets):
                     raise LpUnpackError('Logical partition metadata has invalid magic value.')
                 else:
-                    print(f'Read Backup header by offset 0x{offsets[check_index]:x}')
+                    print(f'Read Backup header by offset 0x{offsets[check_index]:x}', file=sys.stderr)
                     continue
 
             metadata.header = header
@@ -818,12 +818,12 @@ class LpUnpack(object):
     def unpack(self):
         try:
             if SparseImage(self._fd).check():
-                print('Sparse image detected.')
-                print('Process conversion to non sparse image ....', end='', flush=True)
+                print('Sparse image detected.', file=sys.stderr)
+                print('Process conversion to non sparse image ....', end='', flush=True, file=sys.stderr)
                 unsparse_file = SparseImage(self._fd).unsparse()
                 self._fd.close()
                 self._fd = open(str(unsparse_file), 'rb')
-                print('[ok]')
+                print('[ok]', file=sys.stderr)
 
             self._fd.seek(0)
             metadata = self._read_metadata()
@@ -858,7 +858,7 @@ class LpUnpack(object):
                     self._extract(partition, metadata)
 
         except LpUnpackError as e:
-            print(e.message)
+            print(e.message, file=sys.stderr)
             sys.exit(1)
 
         finally:
