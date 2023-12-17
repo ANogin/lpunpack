@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
-from typing import IO, Dict, List, Tuple, TypeVar, cast, BinaryIO
+from typing import IO, Optional, Dict, List, Tuple, TypeVar, cast, BinaryIO
 
 SPARSE_HEADER_MAGIC = 0xED26FF3A
 SPARSE_HEADER_SIZE = 28
@@ -623,14 +623,18 @@ class SparseImage:
 
         return self._fd.read(chunk_data_size)
 
-    def unsparse(self):
+    def unsparse(self, out_dir: Optional[Path]) -> Path:
         if not self.header:
             self._fd.seek(0)
             self.header = SparseHeader(self._fd.read(SPARSE_HEADER_SIZE))
         chunks = self.header.total_chunks
         self._fd.seek(self.header.file_hdr_sz - SPARSE_HEADER_SIZE, 1)
-        unsparse_file_dir = Path(self._fd.name).parent
-        unsparse_file = Path(unsparse_file_dir / "{}.unsparse.img".format(Path(self._fd.name).stem))
+        if out_dir is None:
+            out_dir = Path(self._fd.name).parent
+        unsparse_file = Path(out_dir / "{}.unsparse.img".format(Path(self._fd.name).stem))
+        # if unsparse_file.exists():
+        #    print (" [already exists], ", end="", file=sys.stderr)
+        #    return unsparse_file
         with open(str(unsparse_file), 'wb') as out:
             output_blocks = 0
             crc32 = 0
@@ -820,7 +824,7 @@ class LpUnpack(object):
             if SparseImage(self._fd).check():
                 print('Sparse image detected.', file=sys.stderr)
                 print('Process conversion to non sparse image ....', end='', flush=True, file=sys.stderr)
-                unsparse_file = SparseImage(self._fd).unsparse()
+                unsparse_file = SparseImage(self._fd).unsparse(self._out_dir)
                 self._fd.close()
                 self._fd = open(str(unsparse_file), 'rb')
                 print('[ok]', file=sys.stderr)
