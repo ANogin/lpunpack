@@ -110,35 +110,6 @@ class EnumAction(argparse.Action):
         setattr(namespace, self.dest, value)
 
 
-class ShowJsonInfo(json.JSONEncoder):
-    def __init__(self, ignore_keys: List[str], **kwargs):
-        super().__init__(**kwargs)
-        self._ignore_keys = ignore_keys
-
-    def _remove_ignore_keys(self, data: Dict):
-        _data = copy.deepcopy(data)
-        for field_key, v in data.items():
-            if field_key in self._ignore_keys:
-                _data.pop(field_key)
-                continue
-
-            if v == 0:
-                _data.pop(field_key)
-                continue
-
-            if isinstance(v, int) and not isinstance(v, bool):
-                _data.update({field_key: str(v)})
-        return _data
-
-    def encode(self, data: Dict) -> str:
-        result = {
-            "partitions": list(map(self._remove_ignore_keys, data["partition_table"])),
-            "groups": list(map(self._remove_ignore_keys, data["group_table"])),
-            "block_devices": list(map(self._remove_ignore_keys, data["block_devices"]))
-        }
-        return super().encode(result)
-
-
 class LpMetadataBase:
     _fmt = None
 
@@ -540,14 +511,7 @@ class Metadata:
         if not data:
             return ""
 
-        return json.dumps(
-            data,
-            indent=1,
-            cls=ShowJsonInfo,
-            ignore_keys=[
-                'metadata_version', 'metadata_size', 'metadata_max_size', 'metadata_slot_count', 'header_flags', 'partition_layout',
-                'attributes', 'extents', 'flags', 'first_sector'
-            ])
+        return json.dumps(data, indent=1)
 
     def __str__(self):
         data = self._get_info()
